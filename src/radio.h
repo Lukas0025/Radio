@@ -9,7 +9,6 @@
 #include <RadioLib.h>
 #include "./debug.h"
 
-#define RADIOHW SX1278
 #define RTTY_IDLE_TIME 10
 
 // define version of module
