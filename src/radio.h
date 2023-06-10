@@ -8,6 +8,7 @@
 
 #include <RadioLib.h>
 #include "./debug.h"
+#include <ssdo.h>
 
 #define RTTY_IDLE_TIME 10
 
@@ -114,6 +115,12 @@ class RadioControl {
          */
         bool sendLora(uint8_t* message, unsigned size);
 
+        void setSSDOSender(uint32_t senderId);
+        
+        bool sendLoraSSDO(uint8_t* obj, unsigned size, uint32_t objectId, uint8_t objType = SSDO_TYPE_RAW);
+
+        bool sendLoraSSDO(uint8_t* obj, unsigned size, uint32_t objectId, uint8_t objType, LoraSettings_t newLoRaSettings, unsigned resend = 1);
+
         /**
          * send LORA string message
          * @param message string to send
@@ -130,10 +137,17 @@ class RadioControl {
         bool sendSSTVGS(uint8_t *image);
 
     private:
+        ssdoChange_t   changeEncode(LoraSettings_t newSettings);
+        LoraSettings_t changeDecode(ssdoChange_t newSettings, LoraSettings_t defaults);
+        
         RADIOHW    *radio;
         RTTYClient *rtty;
         SSTVClient *sstv;
+
+        LoraSettings_t LoRaSettings;
         
+        uint32_t SSDOSenderId;
+
         bool fskReady;
         bool rttyReady;
         bool loraReady;

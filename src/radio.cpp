@@ -98,6 +98,8 @@ bool RadioControl::setupLora(LoraSettings_t LoRaSettings) {
   
   DEBUG_PRINT("Setuping LORA");
 
+  this->LoRaSettings = LoRaSettings;
+
   int16_t state = this->radio->begin(
     LoRaSettings.Frequency,
     LoRaSettings.Bandwidth,
@@ -158,6 +160,78 @@ bool RadioControl::sendLora(uint8_t* message, unsigned size) {
   //this->radio->standby(); 
   
   return true;
+}
+
+ssdoChange_t RadioControl::changeEncode(LoraSettings_t newSettings) {
+  ssdoChange_t newSSDOSettings;
+
+	newSSDOSettings.Frequency    = newSettings.Frequency;
+	newSSDOSettings.Bandwidth    = newSettings.Bandwidth;
+	newSSDOSettings.SpreadFactor = newSettings.SpreadFactor;
+	newSSDOSettings.CodeRate     = newSettings.CodeRate;
+	newSSDOSettings.SyncWord     = newSettings.SyncWord;
+
+	return newSSDOSettings;
+}
+
+LoraSettings_t RadioControl::changeDecode(ssdoChange_t newSettings, LoraSettings_t defaults) {
+  LoraSettings_t newLORASettings = defaults;
+
+	newLORASettings.Frequency    = newSettings.Frequency;
+	newLORASettings.Bandwidth    = newSettings.Bandwidth;
+	newLORASettings.SpreadFactor = newSettings.SpreadFactor;
+	newLORASettings.CodeRate     = newSettings.CodeRate;
+	newLORASettings.SyncWord     = newSettings.SyncWord;
+
+	return newLORASettings;
+}
+
+void RadioControl::setSSDOSender(uint32_t senderId) {
+  this->SSDOSenderId = senderId;
+}
+
+bool RadioControl::sendLoraSSDO(uint8_t* obj, unsigned size, uint32_t objectId, uint8_t objType) {
+  
+  SSDO ssdoProtocol = SSDO(this->SSDOSenderId, objectId, objType);
+
+  uint8_t packet[SSDO_PACKET_SIZE];
+
+	for (unsigned i = 0; i < ssdoProtocol.packetsCount(size); i++) { 
+		unsigned packetLen = ssdoProtocol.setPacket(obj, i, packet, size);
+		this->sendLora(packet, packetLen);
+	}
+
+  return true;
+}
+
+bool RadioControl::sendLoraSSDO(uint8_t* obj, unsigned size, uint32_t objectId, uint8_t objType, LoraSettings_t newLoRaSettings, unsigned resend) {
+  
+  if (memcmp(&newLoRaSettings, &(this->LoRaSettings), sizeof(LoraSettings_t)) != 0) {
+
+    SSDO ssdoProtocol    = SSDO(this->SSDOSenderId, objectId, SSDO_TYPE_CHANGE);
+
+    auto newSSDOSettings = this->changeEncode(LoRaSettings);
+
+    uint8_t packet[SSDO_PACKET_SIZE];
+
+    for (unsigned retry = 0; retry < resend; retry++)
+	  for (unsigned i = 0; i < ssdoProtocol.packetsCount(sizeof(ssdoChange_t)); i++) { 
+		  unsigned packetLen = ssdoProtocol.setPacket((uint8_t*) &newSSDOSettings, i, packet, sizeof(ssdoChange_t));
+		  this->sendLora(packet, packetLen);
+	  }
+  }
+
+  auto oldSettings = this->LoRaSettings;
+
+  this->setupLora(newLoRaSettings);
+
+  delay(1000);
+
+  bool res = this->sendLoraSSDO(obj, size, objectId, objType);
+
+  this->setupLora(oldSettings);
+
+  return res;
 }
 
 bool RadioControl::sendSSTV(uint16_t *image) {
