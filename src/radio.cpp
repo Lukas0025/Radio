@@ -5,6 +5,88 @@
  */
 #include "radio.h"
 
+#define RECV_BUFF_SIZE 10
+
+uint8_t RadioRecvBuffer[SSDO_PACKET_SIZE * RECV_BUFF_SIZE];
+uint8_t ssdoBodyBuff[SSDO_PACKET_SIZE];
+ssdoHeader_t ssdoHeaderBuff;
+
+unsigned     recvBuffWritePos = 0;
+unsigned     recvBuffReadPos  = 0;
+
+bool         rebootLora       = false;
+
+RadioControl* activeRC;
+
+/**
+ * Interupts handlers
+ */
+
+void handleLoraReceive() {
+  activeRC->radio->readData(RadioRecvBuffer + SSDO_PACKET_SIZE * recvBuffWritePos, 0);
+  recvBuffWritePos = (recvBuffWritePos + 1) % RECV_BUFF_SIZE;
+  timerWrite(activeRC->ssdoResetTimer, 0);
+}
+
+void handleSSDOPacket(uint8_t* packet) {
+  if (!SSDO::decodePacket(packet, ssdoBodyBuff, &ssdoHeaderBuff)) return;
+
+  if (ssdoHeaderBuff.objType == SSDO_TYPE_CHANGE) {
+
+    DEBUG_PRINT("SSDO change req");
+
+    // SSDO change req
+    LoraSettings_t newSettings   = activeRC->changeDecode((ssdoChange_t*) ssdoBodyBuff, &(activeRC->LoRaSettings));
+    activeRC->setupLora(newSettings, false);
+    activeRC->radio->startReceive();
+
+    // start reset timer
+    timerWrite(activeRC->ssdoResetTimer, 0);
+    timerAlarmEnable(activeRC->ssdoResetTimer);
+  } else {
+    activeRC->ssdoPacketHandler(ssdoBodyBuff, &ssdoHeaderBuff);
+  }
+}
+
+void handleSSDOObject(uint8_t* body, ssdoHeader_t* header) {
+  //todo
+}
+
+void RadioControl::processRecvBuff() {
+  if (rebootLora) {
+    rebootLora = false;
+    this->resetLora();
+    this->radio->startReceive();
+  }
+
+  if (recvBuffWritePos == recvBuffReadPos) return;
+
+  this->loraHandler(RadioRecvBuffer + SSDO_PACKET_SIZE * recvBuffReadPos);
+
+  recvBuffReadPos = (recvBuffReadPos + 1) % RECV_BUFF_SIZE;
+}
+
+void resetLoraHandler() {
+  rebootLora = true;
+}
+
+/**
+ * End of interupts handlers
+ */
+
+RadioControl::RadioControl(RADIOHW *radio) {
+  this->radio     = radio;
+                        
+  this->fskReady  = false;
+  this->rttyReady = false;
+  this->loraReady = false;
+  this->sstvReady = false;
+
+  this->ssdoResetTimer = timerBegin(0, 80, true);                 	  // timer 0, prescalar: 80, UP counting
+  timerAttachInterrupt(this->ssdoResetTimer, resetLoraHandler, true); 	// Attach interrupt
+  timerAlarmWrite(this->ssdoResetTimer, 1000000 * 30, true);     		  // Match value= 1000000 for 1 sec. delay.
+}
+
 bool RadioControl::setupRTTY(RTTYSettings_t RTTYSettings, RTTYClient *rtty) {
   
   DEBUG_PRINT("Stuping RTTY");
@@ -94,11 +176,11 @@ bool RadioControl::setupSSTV(SSTVSettings_t ssvtsettings, SSTVClient *sstv) {
   return true;
 }
 
-bool RadioControl::setupLora(LoraSettings_t LoRaSettings) {
+bool RadioControl::setupLora(LoraSettings_t LoRaSettings, bool is_default) {
   
   DEBUG_PRINT("Setuping LORA");
 
-  this->LoRaSettings = LoRaSettings;
+  if (is_default) this->LoRaSettings = LoRaSettings;
 
   int16_t state = this->radio->begin(
     LoRaSettings.Frequency,
@@ -174,20 +256,46 @@ ssdoChange_t RadioControl::changeEncode(LoraSettings_t newSettings) {
 	return newSSDOSettings;
 }
 
-LoraSettings_t RadioControl::changeDecode(ssdoChange_t newSettings, LoraSettings_t defaults) {
-  LoraSettings_t newLORASettings = defaults;
+LoraSettings_t RadioControl::changeDecode(ssdoChange_t *newSettings, LoraSettings_t *defaults) {
+  LoraSettings_t newLORASettings;
 
-	newLORASettings.Frequency    = newSettings.Frequency;
-	newLORASettings.Bandwidth    = newSettings.Bandwidth;
-	newLORASettings.SpreadFactor = newSettings.SpreadFactor;
-	newLORASettings.CodeRate     = newSettings.CodeRate;
-	newLORASettings.SyncWord     = newSettings.SyncWord;
+  memcpy(&newLORASettings, defaults, sizeof(LoraSettings_t));
+
+	newLORASettings.Frequency    = newSettings->Frequency;
+	newLORASettings.Bandwidth    = newSettings->Bandwidth;
+	newLORASettings.SpreadFactor = newSettings->SpreadFactor;
+	newLORASettings.CodeRate     = newSettings->CodeRate;
+	newLORASettings.SyncWord     = newSettings->SyncWord;
 
 	return newLORASettings;
 }
 
 void RadioControl::setSSDOSender(uint32_t senderId) {
   this->SSDOSenderId = senderId;
+}
+
+void RadioControl::resetLora() {
+  this->setupLora(this->LoRaSettings, false);
+  timerAlarmDisable(this->ssdoResetTimer);
+}
+
+void RadioControl::setLoraReceiveHandler(void (*handler)(uint8_t*)) {
+  this->radio->setDio0Action(handleLoraReceive, RISING);
+  this->loraHandler = handler;
+
+  this->radio->startReceive();
+  
+  activeRC = this;
+}
+
+void RadioControl::setLoraSSDOPacketHandler(void (*handler)(uint8_t*, ssdoHeader_t*)) {
+  this->setLoraReceiveHandler(handleSSDOPacket);
+  this->ssdoPacketHandler = handler;
+}
+
+void RadioControl::setLoraSSDOObjectHandler(void (*handler)(uint8_t*, ssdoHeader_t*)) {
+  this->setLoraSSDOPacketHandler(handleSSDOObject);
+  this->ssdoObjectHandler = handler;
 }
 
 bool RadioControl::sendLoraSSDO(uint8_t* obj, unsigned size, uint32_t objectId, uint8_t objType) {
@@ -221,15 +329,13 @@ bool RadioControl::sendLoraSSDO(uint8_t* obj, unsigned size, uint32_t objectId, 
 	  }
   }
 
-  auto oldSettings = this->LoRaSettings;
-
-  this->setupLora(newLoRaSettings);
+  this->setupLora(newLoRaSettings, false);
 
   delay(1000);
 
   bool res = this->sendLoraSSDO(obj, size, objectId, objType);
 
-  this->setupLora(oldSettings);
+  this->setupLora(this->LoRaSettings, false);
 
   return res;
 }

@@ -62,14 +62,7 @@ class RadioControl {
          * for more features like rtty, FSK, lora and sstv need to setup this features before use
           * @param RadioSettings struct with radio module settings
          */
-        RadioControl(RADIOHW *radio) {
-            this->radio     = radio;
-                        
-            this->fskReady  = false;
-            this->rttyReady = false;
-            this->loraReady = false;
-            this->sstvReady = false;
-        }
+        RadioControl(RADIOHW *radio);
 
         /**
          * Setup RTTY radio feature
@@ -98,7 +91,7 @@ class RadioControl {
          * @param LoRaSettings settings to set
          * @return bool
          */
-        bool setupLora(LoraSettings_t LoraSettings);
+        bool setupLora(LoraSettings_t LoraSettings, bool is_default = true);
 
         /**
          * send RTTY telemetry message
@@ -135,16 +128,35 @@ class RadioControl {
         bool sendSSTV(uint16_t *image);
 
         bool sendSSTVGS(uint8_t *image);
-
-    private:
-        ssdoChange_t   changeEncode(LoraSettings_t newSettings);
-        LoraSettings_t changeDecode(ssdoChange_t newSettings, LoraSettings_t defaults);
         
+        void resetLora();
+
+        void setLoraReceiveHandler(void (*handler)(uint8_t*));
+
+        void setLoraSSDOPacketHandler(void (*handler)(uint8_t*, ssdoHeader_t*));
+
+        void setLoraSSDOObjectHandler(void (*handler)(uint8_t*, ssdoHeader_t*));
+
+        ssdoChange_t   changeEncode(LoraSettings_t newSettings);
+        LoraSettings_t changeDecode(ssdoChange_t* newSettings, LoraSettings_t* defaults);
+
+        void processRecvBuff();
+
         RADIOHW    *radio;
-        RTTYClient *rtty;
-        SSTVClient *sstv;
+
+        void (*loraHandler)(uint8_t*);
+        void (*ssdoPacketHandler)(uint8_t*, ssdoHeader_t*);
+        void (*ssdoObjectHandler)(uint8_t*, ssdoHeader_t*);
+
+        hw_timer_t* ssdoResetTimer;
 
         LoraSettings_t LoRaSettings;
+
+    private:
+        
+        
+        RTTYClient *rtty;
+        SSTVClient *sstv;
         
         uint32_t SSDOSenderId;
 
